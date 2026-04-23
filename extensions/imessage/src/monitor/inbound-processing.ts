@@ -237,6 +237,27 @@ export function resolveIMessageInboundDecision(params: {
   const hasInboundGuid = Boolean(normalizeReplyField(params.message.guid));
 
   if (params.message.is_from_me) {
+    // Reflection guard: drop bot-originated content before mention matching.
+    // The mention regex \b@?name\b also matches [Name] in bot prefixes,
+    // so reflected responses must be rejected first to prevent echo loops.
+    const earlyRoute = resolveIMessageConversationRoute({
+      cfg: params.cfg,
+      accountId: params.accountId,
+      isGroup,
+      peerId: isGroup ? String(chatId ?? "unknown") : dmPeerId,
+      sender: dmPeerSender,
+      chatId,
+    });
+    const earlyAgentName = params.cfg.agents?.list?.find((a) => a.id === earlyRoute.agentId)
+      ?.identity?.name;
+    const earlyReflection = detectReflectedContent(messageText, earlyAgentName);
+    if (earlyReflection.isReflection) {
+      params.logVerbose?.(
+        `imessage: dropping reflected content from self (markers: ${earlyReflection.matchedLabels.join(", ")})`,
+      );
+      return { kind: "drop", reason: "reflected content from self" };
+    }
+
     if (isAmbiguousSelfThread) {
       params.selfChatCache?.remember(selfChatLookup);
     }

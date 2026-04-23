@@ -304,6 +304,7 @@ describe("resolveIMessageInboundDecision self-invocation via mention", () => {
     } = {},
   ) {
     const cfg = {
+      agents: { list: [{ id: "main", identity: { name: "millbot" } }] },
       messages: {
         groupChat: {
           mentionPatterns: ["millbot"],
@@ -415,6 +416,18 @@ describe("resolveIMessageInboundDecision self-invocation via mention", () => {
     }
 
     spy.mockRestore();
+  });
+
+  it("drops is_from_me messages with [AgentName] prefix as reflected content", () => {
+    const decision = resolveDecisionWithMention({
+      message: {
+        text: "[Millbot] pong",
+        is_from_me: true,
+      },
+      messageText: "[Millbot] pong",
+      bodyText: "[Millbot] pong",
+    });
+    expect(decision).toEqual({ kind: "drop", reason: "reflected content from self" });
   });
 
   it("drops is_from_me messages when no mention patterns are configured", () => {
