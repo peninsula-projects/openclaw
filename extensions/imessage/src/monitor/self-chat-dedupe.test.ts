@@ -22,7 +22,10 @@ import { createSelfChatCache } from "./self-chat-cache.js";
 
 type InboundDecisionParams = Parameters<typeof resolveIMessageInboundDecision>[0];
 
-const cfg = {} as OpenClawConfig;
+const cfg = {
+  agents: { list: [{ id: "main", identity: { name: "testbot" } }] },
+  messages: { groupChat: { mentionPatterns: ["testbot"] } },
+} as unknown as OpenClawConfig;
 
 function createParams(
   overrides: Omit<Partial<InboundDecisionParams>, "message"> & {
@@ -354,12 +357,12 @@ describe("self-chat is_from_me=true handling (Bruce Phase 2 fix)", () => {
           sender: "+15551234567",
           chat_identifier: "+15551234567",
           destination_caller_id: "+15551234567",
-          text: "Hello this is a test message",
+          text: "@testbot Hello this is a test message",
           is_from_me: true,
           is_group: false,
         },
-        messageText: "Hello this is a test message",
-        bodyText: "Hello this is a test message",
+        messageText: "@testbot Hello this is a test message",
+        bodyText: "@testbot Hello this is a test message",
         echoCache,
         selfChatCache,
       }),
@@ -556,7 +559,7 @@ describe("self-chat is_from_me=true handling (Bruce Phase 2 fix)", () => {
       }),
     );
 
-    expect(decision.kind).toBe("dispatch");
+    expect(decision.kind).toBe("drop");
   });
 
   it("drops is_from_me=false reflection via selfChatCache (existing behavior preserved)", () => {
@@ -566,7 +569,7 @@ describe("self-chat is_from_me=true handling (Bruce Phase 2 fix)", () => {
     const selfChatCache = createSelfChatCache();
     const createdAt = "2026-03-24T12:00:00.000Z";
 
-    // Step 1: is_from_me=true copy arrives (real user message) → processed, selfChatCache populated
+    // Step 1: is_from_me=true copy arrives (real user message with mention) → processed, selfChatCache populated
     const first = resolveIMessageInboundDecision(
       createParams({
         message: {
@@ -574,13 +577,13 @@ describe("self-chat is_from_me=true handling (Bruce Phase 2 fix)", () => {
           sender: "+15551234567",
           chat_identifier: "+15551234567",
           destination_caller_id: "+15551234567",
-          text: "Hello",
+          text: "@testbot Hello",
           created_at: createdAt,
           is_from_me: true,
           is_group: false,
         },
-        messageText: "Hello",
-        bodyText: "Hello",
+        messageText: "@testbot Hello",
+        bodyText: "@testbot Hello",
         selfChatCache,
       }),
     );
@@ -594,13 +597,13 @@ describe("self-chat is_from_me=true handling (Bruce Phase 2 fix)", () => {
           id: 123704,
           sender: "+15551234567",
           chat_identifier: "+15551234567",
-          text: "Hello",
+          text: "@testbot Hello",
           created_at: createdAt,
           is_from_me: false,
           is_group: false,
         },
-        messageText: "Hello",
-        bodyText: "Hello",
+        messageText: "@testbot Hello",
+        bodyText: "@testbot Hello",
         selfChatCache,
       }),
     );

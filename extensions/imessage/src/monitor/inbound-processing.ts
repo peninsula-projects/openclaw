@@ -222,6 +222,15 @@ export function resolveIMessageInboundDecision(params: {
     chatIdentifierNormalized != null &&
     senderNormalized === chatIdentifierNormalized &&
     destinationCallerIdNormalized == null;
+  // For self-authored 1:1 messages, sender is the account owner, not the
+  // conversation peer. Use chat_identifier (the peer handle) for route/id resolution.
+  const dmPeerId =
+    params.message.is_from_me && !isGroup && chatIdentifierNormalized
+      ? chatIdentifierNormalized
+      : senderNormalized;
+  const dmPeerSender =
+    params.message.is_from_me && !isGroup && chatIdentifier ? chatIdentifier : sender;
+
   let skipSelfChatHasCheck = false;
   const inboundMessageIds = resolveInboundEchoMessageIds(params.message);
   const inboundMessageId = inboundMessageIds[0];
@@ -233,28 +242,63 @@ export function resolveIMessageInboundDecision(params: {
     }
     if (isSelfChat) {
       params.selfChatCache?.remember(selfChatLookup);
-      const echoScope = buildIMessageEchoScope({
+      const selfChatRoute = resolveIMessageConversationRoute({
+        cfg: params.cfg,
         accountId: params.accountId,
         isGroup,
+        peerId: dmPeerId,
+        sender: dmPeerSender,
         chatId,
-        sender,
       });
+      const selfChatMentionRegexes = buildMentionRegexes(params.cfg, selfChatRoute.agentId);
       if (
-        params.echoCache &&
-        (bodyText || inboundMessageId) &&
-        hasIMessageEchoMatch({
-          echoCache: params.echoCache,
-          scope: echoScope,
-          text: bodyText || undefined,
-          messageIds: inboundMessageIds,
-          skipIdShortCircuit: !hasInboundGuid,
-        })
+        selfChatMentionRegexes.length > 0 &&
+        matchesMentionPatterns(messageText, selfChatMentionRegexes)
       ) {
-        return { kind: "drop", reason: "agent echo in self-chat" };
+        params.logVerbose?.("imessage: allowing self-chat invocation via mention");
+      } else {
+        const echoScope = buildIMessageEchoScope({
+          accountId: params.accountId,
+          isGroup,
+          chatId,
+          sender,
+        });
+        if (
+          params.echoCache &&
+          (bodyText || inboundMessageId) &&
+          hasIMessageEchoMatch({
+            echoCache: params.echoCache,
+            scope: echoScope,
+            text: bodyText || undefined,
+            messageIds: inboundMessageIds,
+            skipIdShortCircuit: !hasInboundGuid,
+          })
+        ) {
+          return { kind: "drop", reason: "agent echo in self-chat" };
+        }
+        return { kind: "drop", reason: "self-chat without mention" };
       }
       skipSelfChatHasCheck = true;
     } else {
-      return { kind: "drop", reason: "from me" };
+      // Allow explicit self-invocation when the owner mentions the bot by name.
+      const selfInvokeRoute = resolveIMessageConversationRoute({
+        cfg: params.cfg,
+        accountId: params.accountId,
+        isGroup,
+        peerId: isGroup ? String(chatId ?? "unknown") : dmPeerId,
+        sender: dmPeerSender,
+        chatId,
+      });
+      const selfInvokeMentionRegexes = buildMentionRegexes(params.cfg, selfInvokeRoute.agentId);
+      if (
+        selfInvokeMentionRegexes.length > 0 &&
+        matchesMentionPatterns(messageText, selfInvokeMentionRegexes)
+      ) {
+        params.logVerbose?.("imessage: allowing self-invocation via mention");
+        skipSelfChatHasCheck = true;
+      } else {
+        return { kind: "drop", reason: "from me" };
+      }
     }
   }
   if (isGroup && !chatId) {
@@ -322,8 +366,8 @@ export function resolveIMessageInboundDecision(params: {
     cfg: params.cfg,
     accountId: params.accountId,
     isGroup,
-    peerId: isGroup ? String(chatId ?? "unknown") : senderNormalized,
-    sender,
+    peerId: isGroup ? String(chatId ?? "unknown") : dmPeerId,
+    sender: dmPeerSender,
     chatId,
   });
   const mentionRegexes = buildMentionRegexes(params.cfg, route.agentId);
@@ -370,7 +414,9 @@ export function resolveIMessageInboundDecision(params: {
   // Reflection guard: drop inbound messages that contain assistant-internal
   // metadata markers. These indicate outbound content was reflected back as
   // inbound, which causes recursive echo amplification.
-  const reflection = detectReflectedContent(messageText);
+  const agentIdentityName = params.cfg.agents?.list?.find((a) => a.id === route.agentId)?.identity
+    ?.name;
+  const reflection = detectReflectedContent(messageText, agentIdentityName);
   if (reflection.isReflection) {
     params.logVerbose?.(
       `imessage: dropping reflected assistant content (markers: ${reflection.matchedLabels.join(", ")})`,

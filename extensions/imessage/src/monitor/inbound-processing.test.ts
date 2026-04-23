@@ -8,7 +8,10 @@ import {
 import { createSelfChatCache } from "./self-chat-cache.js";
 
 describe("resolveIMessageInboundDecision echo detection", () => {
-  const cfg = {} as OpenClawConfig;
+  const cfg = {
+    agents: { list: [{ id: "main", identity: { name: "testbot" } }] },
+    messages: { groupChat: { mentionPatterns: ["testbot"] } },
+  } as unknown as OpenClawConfig;
   type InboundDecisionParams = Parameters<typeof resolveIMessageInboundDecision>[0];
 
   function createInboundDecisionParams(
@@ -122,12 +125,12 @@ describe("resolveIMessageInboundDecision echo detection", () => {
           sender: "+15555550123",
           chat_identifier: "+15555550123",
           destination_caller_id: "+15555550123",
-          text: "Do you want to report this issue?",
+          text: "@testbot Do you want to report this issue?",
           created_at: createdAt,
           is_from_me: true,
         },
-        messageText: "Do you want to report this issue?",
-        bodyText: "Do you want to report this issue?",
+        messageText: "@testbot Do you want to report this issue?",
+        bodyText: "@testbot Do you want to report this issue?",
         selfChatCache,
       }),
     ).toMatchObject({ kind: "dispatch" });
@@ -138,11 +141,11 @@ describe("resolveIMessageInboundDecision echo detection", () => {
           id: 9642,
           sender: "+15555550123",
           chat_identifier: "+15555550123",
-          text: "Do you want to report this issue?",
+          text: "@testbot Do you want to report this issue?",
           created_at: createdAt,
         },
-        messageText: "Do you want to report this issue?",
-        bodyText: "Do you want to report this issue?",
+        messageText: "@testbot Do you want to report this issue?",
+        bodyText: "@testbot Do you want to report this issue?",
         selfChatCache,
       }),
     ).toEqual({ kind: "drop", reason: "self-chat echo" });
@@ -238,10 +241,12 @@ describe("resolveIMessageInboundDecision echo detection", () => {
         id: 9752,
         chat_id: 123,
         sender: "+15555550999",
-        text: "same text",
+        text: "@testbot same text",
         created_at: createdAt,
         is_group: true,
       },
+      messageText: "@testbot same text",
+      bodyText: "@testbot same text",
       selfChatCache,
     });
 
@@ -287,6 +292,158 @@ describe("resolveIMessageInboundDecision echo detection", () => {
     expect(logVerbose).toHaveBeenCalledWith(
       `imessage: dropping self-chat reflected duplicate: "${sanitizeTerminalText(bodyText)}"`,
     );
+  });
+});
+
+describe("resolveIMessageInboundDecision self-invocation via mention", () => {
+  type InboundDecisionParams = Parameters<typeof resolveIMessageInboundDecision>[0];
+
+  function resolveDecisionWithMention(
+    overrides: Omit<Partial<InboundDecisionParams>, "message" | "cfg"> & {
+      message?: Partial<InboundDecisionParams["message"]>;
+    } = {},
+  ) {
+    const cfg = {
+      messages: {
+        groupChat: {
+          mentionPatterns: ["millbot"],
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const { message: messageOverrides, ...restOverrides } = overrides;
+    const message = {
+      id: 42,
+      sender: "+15555550123",
+      text: "ok",
+      is_from_me: true,
+      is_group: false,
+      ...messageOverrides,
+    };
+    const messageText = restOverrides.messageText ?? message.text ?? "";
+    const bodyText = restOverrides.bodyText ?? messageText;
+    return resolveIMessageInboundDecision({
+      cfg,
+      accountId: "default",
+      opts: undefined,
+      allowFrom: [],
+      groupAllowFrom: [],
+      groupPolicy: "open",
+      dmPolicy: "open",
+      storeAllowFrom: [],
+      historyLimit: 0,
+      groupHistories: new Map(),
+      echoCache: undefined,
+      selfChatCache: undefined,
+      logVerbose: undefined,
+      ...restOverrides,
+      message,
+      messageText,
+      bodyText,
+    });
+  }
+
+  it("drops is_from_me messages without a mention", () => {
+    const decision = resolveDecisionWithMention({
+      message: {
+        text: "hello world",
+        is_from_me: true,
+      },
+      messageText: "hello world",
+      bodyText: "hello world",
+    });
+    expect(decision).toEqual({ kind: "drop", reason: "from me" });
+  });
+
+  it("allows is_from_me messages with an explicit mention", () => {
+    const decision = resolveDecisionWithMention({
+      message: {
+        text: "@millbot what time is it?",
+        is_from_me: true,
+      },
+      messageText: "@millbot what time is it?",
+      bodyText: "@millbot what time is it?",
+    });
+    expect(decision.kind).toBe("dispatch");
+  });
+
+  it("routes self-authored 1:1 mention using peer from chat_identifier, not sender", async () => {
+    const _mod = await import("../conversation-route.js");
+    const spy = vi.spyOn(
+      await import("../conversation-route.js"),
+      "resolveIMessageConversationRoute",
+    );
+    // Re-import to pick up the spy
+    const { resolveIMessageInboundDecision: resolve } = await import("./inbound-processing.js");
+
+    const cfg = {
+      messages: { groupChat: { mentionPatterns: ["millbot"] } },
+    } as unknown as OpenClawConfig;
+
+    const decision = resolve({
+      cfg,
+      accountId: "default",
+      message: {
+        id: 42,
+        sender: "+15555550123", // account owner
+        chat_identifier: "+15555559999", // conversation peer
+        text: "@millbot what time is it?",
+        is_from_me: true,
+        is_group: false,
+      },
+      opts: undefined,
+      messageText: "@millbot what time is it?",
+      bodyText: "@millbot what time is it?",
+      allowFrom: [],
+      groupAllowFrom: [],
+      groupPolicy: "open",
+      dmPolicy: "open",
+      storeAllowFrom: [],
+      historyLimit: 0,
+      groupHistories: new Map(),
+      echoCache: undefined,
+      selfChatCache: undefined,
+      logVerbose: undefined,
+    });
+
+    expect(decision.kind).toBe("dispatch");
+    // Both route calls (self-invoke check + main) should use the peer handle
+    const routeCalls = spy.mock.calls;
+    expect(routeCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of routeCalls) {
+      expect(call[0].peerId).toBe("+15555559999");
+      expect(call[0].sender).toBe("+15555559999");
+    }
+
+    spy.mockRestore();
+  });
+
+  it("drops is_from_me messages when no mention patterns are configured", () => {
+    const cfg = {} as OpenClawConfig;
+    const decision = resolveIMessageInboundDecision({
+      cfg,
+      accountId: "default",
+      message: {
+        id: 42,
+        sender: "+15555550123",
+        text: "@millbot hello",
+        is_from_me: true,
+        is_group: false,
+      },
+      opts: undefined,
+      messageText: "@millbot hello",
+      bodyText: "@millbot hello",
+      allowFrom: [],
+      groupAllowFrom: [],
+      groupPolicy: "open",
+      dmPolicy: "open",
+      storeAllowFrom: [],
+      historyLimit: 0,
+      groupHistories: new Map(),
+      echoCache: undefined,
+      selfChatCache: undefined,
+      logVerbose: undefined,
+    });
+    expect(decision).toEqual({ kind: "drop", reason: "from me" });
   });
 });
 

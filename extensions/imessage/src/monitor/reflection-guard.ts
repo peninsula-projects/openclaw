@@ -27,6 +27,10 @@ export type ReflectionDetection = {
   matchedLabels: string[];
 };
 
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function hasMatchOutsideCode(text: string, re: RegExp): boolean {
   const codeRegions = findCodeRegions(text);
   const globalRe = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
@@ -44,14 +48,23 @@ function hasMatchOutsideCode(text: string, re: RegExp): boolean {
 /**
  * Check whether an inbound message appears to be a reflection of
  * assistant-originated content. Returns matched pattern labels for telemetry.
+ * When agentName is provided, also detects messages prefixed with [AgentName].
  */
-export function detectReflectedContent(text: string): ReflectionDetection {
+export function detectReflectedContent(text: string, agentName?: string): ReflectionDetection {
   if (!text) {
     return { isReflection: false, matchedLabels: [] };
   }
 
+  const patterns = [...REFLECTION_PATTERNS];
+  if (agentName) {
+    patterns.push({
+      re: new RegExp(`^\\s*\\[${escapeForRegex(agentName)}\\]`, "i"),
+      label: "agent-prefix",
+    });
+  }
+
   const matchedLabels: string[] = [];
-  for (const { re, label } of REFLECTION_PATTERNS) {
+  for (const { re, label } of patterns) {
     if (hasMatchOutsideCode(text, re)) {
       matchedLabels.push(label);
     }
