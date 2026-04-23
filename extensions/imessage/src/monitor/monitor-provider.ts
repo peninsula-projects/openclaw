@@ -311,6 +311,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         decision.reason === "echo" ||
         decision.reason === "self-chat echo" ||
         decision.reason === "reflected assistant content" ||
+        decision.reason === "reflected content from self" ||
         decision.reason === "from me";
       if (isLoopDrop) {
         loopRateLimiter.record(rateLimitKey);
@@ -499,11 +500,31 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     }
   }
 
+  // Deduplicate watcher notifications: imsg fires multiple times per message.
+  const seenMessageIds = new Map<string, number>();
+  const SEEN_MESSAGE_TTL_MS = 30_000;
+
   const handleMessage = async (raw: unknown) => {
     const message = parseIMessageNotification(raw);
     if (!message) {
       logVerbose("imessage: dropping malformed RPC message payload");
       return;
+    }
+    if (message.id != null) {
+      const dedupeKey = `${message.id}:${message.is_from_me ? 1 : 0}`;
+      const now = Date.now();
+      if (seenMessageIds.has(dedupeKey)) {
+        return;
+      }
+      seenMessageIds.set(dedupeKey, now);
+      // Periodic cleanup
+      if (seenMessageIds.size > 256) {
+        for (const [k, ts] of seenMessageIds) {
+          if (now - ts > SEEN_MESSAGE_TTL_MS) {
+            seenMessageIds.delete(k);
+          }
+        }
+      }
     }
     await inboundDebouncer.enqueue({ message });
   };
